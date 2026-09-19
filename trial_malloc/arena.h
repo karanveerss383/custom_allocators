@@ -1,30 +1,54 @@
-#ifndef ARENA_H
-#define ARENA_H
+#ifndef TRIAL_MALLOC_ARENA_H
+#define TRIAL_MALLOC_ARENA_H
 
-#include <stddef.h>  // size_t
+#include <stdbool.h>
+#include <stddef.h>
 
+typedef struct partial_list partial_list;
+
+/* Initialize with {0}. Treat fields as read-only; do not copy a live arena. */
 typedef struct {
-    void*  base;
-    size_t size;
+    void *base;
+    size_t mapped_size;
+    size_t usable_size; /* Back allocations lower this boundary. */
     size_t offset;
     size_t prev_offset;
-    int    fd;
+    partial_list *list;
 } arena;
 
-typedef struct{
-  size_t* position;
-  size_t* size;
-  void* base_ptr;
-  uint8_t counter;
-}partial_list;
+/* Initialization rejects a live arena. Failure leaves an empty arena unchanged. */
+bool arena_init(arena *a, size_t length);
+/* Creates/resizes path; the shared mapping survives closing its descriptor. */
+bool arena_init_file(arena *a, const char *path, size_t length);
+void *arena_alloc(arena *a, size_t length);
+void *arena_alloc_back(arena *a, size_t length);
+/* Rewinds zero discarded bytes. Rollback is one-step, not an undo stack.
+ * Both are rejected while a partial list is attached, even if empty. */
+bool arena_rollback(arena *a);
+bool arena_rewind(arena *a, size_t length);
+/* Zero preserves offsets; reset discards front allocations and clears the list.
+ * Both preserve back reservations, including metadata and its capacity. */
+bool arena_zero(arena *a);
+bool arena_reset(arena *a);
+/* Repeated destruction is safe. On munmap failure the arena remains live. */
+bool arena_destroy(arena *a);
 
-void  arena_init(arena* cur_arena, const char* path, size_t length);
-void* borrow_mem(arena* parent_arena, size_t length, uint8_t addr_offset);
-void   rollback(arena* cur_arena, int prev_flg, size_t rollback_len);
-void   empty(arena* cur_arena);
-void   free_arena(arena* end_arena);
-void create_partial_list(arena* cur_arena, partial_list* addr_list, uint8_t limit);
-void add_partial_list(arena* cur_arena, partial_list* cur_list, void* ptr, size_t length);
-void list_merge(partial_list* cur_list);
-void* get_partial_block(partial_list* cur_list, size_t length);
+/* External descriptor: initialize with {0}; keep it alive until arena_destroy.
+ * The arrays live in the arena. Entries are sorted, disjoint and non-adjacent.
+ * Do not modify fields or copy a live descriptor. Only one list per arena. */
+struct partial_list {
+    size_t *position;
+    size_t *size;
+    size_t counter;
+    size_t capacity;
+    arena *owner;
+};
+
+bool create_partial_list(arena *a, partial_list *list, size_t limit);
+/* Release an owned, complete front allocation using its original byte length.
+ * Bounds/overlap are checked; allocation ownership cannot be inferred. */
+bool add_partial_list(arena *a, partial_list *list, void *ptr, size_t length);
+/* Exact fit first, then first larger range. No bump-allocation fallback. */
+void *get_partial_block(partial_list *list, size_t length);
+
 #endif
